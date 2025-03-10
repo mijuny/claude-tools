@@ -1,0 +1,98 @@
+#!/bin/bash
+
+# claude-bash - Generate and execute bash commands using Claude AI
+# Usage: claude-bash "show my network interfaces"
+
+set -e  # Exit on error
+
+# Check for required arguments
+if [ $# -lt 1 ]; then
+  echo "Usage: claude-bash \"<natural language request>\""
+  echo "Example: claude-bash \"show all my network interfaces\""
+  exit 1
+fi
+
+# Get the user's request
+prompt="$*"
+
+# Get API key using the tulikieli credential manager
+API_KEY=$(tulikieli get claude api_key)
+
+if [ -z "$API_KEY" ]; then
+    echo "Error: Could not retrieve Claude API key from tulikieli"
+    echo "Make sure you've added it with: tulikieli add claude api_key"
+    exit 1
+fi
+
+# Check for jq
+if ! command -v jq &> /dev/null; then
+    echo "Error: jq is not installed. Please install it with:"
+    echo "sudo pacman -S jq"
+    exit 1
+fi
+
+echo "🤔 Generating bash command for: \"$prompt\""
+
+# Create the API request JSON
+req_file=$(mktemp)
+jq -n --arg prompt "$prompt" '{
+    "model": "claude-3-7-sonnet-20250219",
+    "max_tokens": 1024,
+    "messages": [
+        {
+            "role": "user", 
+            "content": ("Generate a bash command to " + $prompt + ". Make sure to properly quote any wildcard patterns, filenames with spaces, or special characters. Provide ONLY the command with no explanation, markdown, quotes, or additional text. The command should work on Arch Linux.")
+        }
+    ]
+}' > "$req_file"
+
+# Call Claude API
+response=$(curl -s https://api.anthropic.com/v1/messages \
+    -H "content-type: application/json" \
+    -H "x-api-key: $API_KEY" \
+    -H "anthropic-version: 2023-06-01" \
+    -d @"$req_file")
+rm "$req_file"
+
+# Check if there was an error in the API call
+if echo "$response" | grep -q "error"; then
+    echo "API Error:"
+    echo "$response" | jq -r '.error.message // .error'
+    exit 1
+fi
+
+# Extract the command and clean it up
+command=$(echo "$response" | jq -r '.content[] | select(.type=="text") | .text' | sed 's/^```bash//g' | sed 's/^```//g' | sed 's/```$//g' | sed 's/^\s*//;s/\s*$//')
+
+# Fix common issues with the find command specifically
+if echo "$command" | grep -q "find" && echo "$command" | grep -q "\-name \*"; then
+    command=$(echo "$command" | sed -E 's/(-name) ([^"'\'']*\*[^"'\'']*)( |$)/\1 "\2"\3/g')
+fi
+
+# Display and confirm the command
+echo "💻 Generated command:"
+echo "   $command"
+echo ""
+read -p "⚠️  Execute this command? [y/N/e] " -n 1 -r
+echo ""
+
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo "🚀 Executing command..."
+    bash -c "$command"
+    exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo "⚠️  Command exited with status $exit_code"
+    fi
+elif [[ $REPLY =~ ^[Ee]$ ]]; then
+    # Edit the command before executing
+    echo "✏️  Edit command:"
+    read -e -i "$command" command
+    echo "🚀 Executing edited command..."
+    bash -c "$command"
+    exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo "⚠️  Command exited with status $exit_code"
+    fi
+else
+    echo "❌ Command not executed."
+fi

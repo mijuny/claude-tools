@@ -1,0 +1,118 @@
+#!/bin/bash
+
+# claude-fix - Simplified script to fix a file using Claude API
+# Usage: claude-fix filename.sh "Fix this script"
+
+set -e  # Exit on error
+
+# Check for required arguments
+if [ $# -lt 2 ]; then
+  echo "Usage: claude-fix <filename> \"<instruction>\""
+  echo "Example: claude-fix script.sh \"Fix the memory percentage calculation\""
+  exit 1
+fi
+
+input_file="$1"
+prompt="$2"
+backup_file="${input_file}.bak"
+temp_file=$(mktemp)
+
+# Check if file exists
+if [ ! -f "$input_file" ]; then
+  echo "Error: File not found: $input_file"
+  exit 1
+fi
+
+# Get API key using the tulikieli credential manager
+API_KEY=$(tulikieli get claude api_key)
+
+if [ -z "$API_KEY" ]; then
+    echo "Error: Could not retrieve Claude API key from tulikieli"
+    echo "Make sure you've added it with: tulikieli add claude api_key"
+    exit 1
+fi
+
+# Check for jq
+if ! command -v jq &> /dev/null; then
+    echo "Error: jq is not installed. Please install it with:"
+    echo "sudo pacman -S jq"
+    exit 1
+fi
+
+echo "Reading file: $input_file"
+echo "Creating backup at: $backup_file"
+cp "$input_file" "$backup_file"
+
+echo "Sending to Claude with prompt: \"$prompt\""
+
+# Create the API request JSON in a temp file
+req_file=$(mktemp)
+jq -n --arg prompt "$prompt" --rawfile content "$input_file" --arg filename "$input_file" '{
+    model: "claude-3-7-sonnet-20250219",
+    max_tokens: 4096,
+    messages: [
+        {
+            role: "user", 
+            content: ($prompt + "\n\nFile content of " + $filename + ":\n```\n" + $content + "\n```\n\nProvide ONLY the complete fixed file content without any explanations, markdown, or code blocks. I will save your response directly as the new version of the file.")
+        }
+    ]
+}' > "$req_file"
+
+# Call Claude API
+echo "Calling Claude API..."
+response=$(curl -s https://api.anthropic.com/v1/messages \
+    -H "content-type: application/json" \
+    -H "x-api-key: $API_KEY" \
+    -H "anthropic-version: 2023-06-01" \
+    -d @"$req_file")
+rm "$req_file"
+
+# Check if there was an error in the API call
+if echo "$response" | grep -q "error"; then
+    echo "API Error:"
+    echo "$response" | jq -r '.error.message // .error'
+    exit 1
+fi
+
+# Extract the raw text content
+raw_content=$(echo "$response" | jq -r '.content[] | select(.type=="text") | .text')
+
+# Clean up the content by removing markdown formatting if present
+# Remove any code block markers
+cleaned_content=$(echo "$raw_content" | sed '/^```/d')
+
+# Save to temp file first
+echo "$cleaned_content" > "$temp_file"
+
+# Check if the result looks reasonable
+line_count=$(wc -l < "$temp_file")
+original_line_count=$(wc -l < "$input_file")
+
+if [ $line_count -lt 3 ]; then
+    echo "Error: Result is too short (only $line_count lines). File not updated."
+    echo "Check Claude's response:"
+    echo "$raw_content"
+    rm "$temp_file"
+    exit 1
+fi
+
+# Line count sanity check
+if [ $line_count -lt $(($original_line_count / 2)) ]; then
+    echo "Warning: The fixed file has significantly fewer lines than the original."
+    echo "Original: $original_line_count lines, Fixed: $line_count lines"
+    read -p "Do you still want to update the file? (y/n): " confirm
+    if [[ ! $confirm =~ ^[Yy]$ ]]; then
+        echo "Operation cancelled. File not updated."
+        rm "$temp_file"
+        exit 0
+    fi
+fi
+
+# Preserve file permissions
+chmod --reference="$input_file" "$temp_file"
+
+# Update the file
+mv "$temp_file" "$input_file"
+
+echo "✅ File updated successfully!"
+echo "Original file backed up as: $backup_file"

@@ -1,0 +1,12 @@
+# Ignore temporary files
+*~
+*.swp
+*.swo
+
+# Ignore system-specific files
+.DS_Store
+Thumbs.db
+
+# Ignore personal configuration
+.env
+config.local.sh

@@ -1,0 +1,220 @@
+#!/bin/bash
+
+# claude-ask - An enhanced CLI tool for interacting with Claude AI
+# Usage: 
+#   claude-ask "Your question"
+#   cat file.txt | claude-ask "Analyze this text"
+#   claude-ask -o response.md "Write a markdown document"
+
+set -e  # Exit on error
+
+# Parse command-line options
+output_file=""
+model="claude-3-7-sonnet-20250219"
+max_tokens=4096
+verbose=false
+
+while getopts "o:m:t:hv" opt; do
+  case $opt in
+    o)
+      output_file="$OPTARG"
+      ;;
+    m)
+      model="$OPTARG"
+      ;;
+    t)
+      max_tokens="$OPTARG"
+      ;;
+    v)
+      verbose=true
+      ;;
+    h)
+      echo "Usage: claude-ask [OPTIONS] \"your question\""
+      echo "  -o FILE    Save response to the specified file"
+      echo "  -m MODEL   Specify Claude model (default: claude-3-7-sonnet-20250219)"
+      echo "  -t TOKENS  Maximum tokens in response (default: 4096)"
+      echo "  -v         Verbose mode (show API request details)"
+      echo "  -h         Show this help message"
+      echo ""
+      echo "Examples:"
+      echo "  claude-ask \"What is quantum computing?\""
+      echo "  cat code.py | claude-ask \"Explain this code\""
+      echo "  claude-ask -o result.md \"Write a tutorial about bash\""
+      exit 0
+      ;;
+    \?)
+      echo "Invalid option: -$OPTARG" >&2
+      exit 1
+      ;;
+  esac
+done
+shift $((OPTIND-1))
+
+# Check for required question argument
+if [ $# -eq 0 ]; then
+  echo "Error: You must provide a question or prompt"
+  echo "Usage: claude-ask [-o output_file] \"your question\""
+  exit 1
+fi
+
+# Get API key using the tulikieli credential manager
+API_KEY=$(tulikieli get claude api_key)
+
+if [ -z "$API_KEY" ]; then
+    echo "Error: Could not retrieve Claude API key from tulikieli"
+    echo "Make sure you've added it with: tulikieli add claude api_key"
+    exit 1
+fi
+
+# Check for jq
+if ! command -v jq &> /dev/null; then
+    echo "Error: jq is not installed. Please install it with:"
+    echo "sudo pacman -S jq"
+    exit 1
+fi
+
+# Create a temporary file for the JSON request
+request_file=$(mktemp)
+
+# Check if receiving input from pipe
+if [ -p /dev/stdin ]; then
+    # Save the piped content to a temporary file
+    piped_content=$(mktemp)
+    cat - > "$piped_content"
+    
+    PROMPT="$1"
+    
+    # Use jq to properly escape both the prompt and content
+    jq -n --arg prompt "$PROMPT" --rawfile content "$piped_content" --arg model "$model" --arg max_tokens "$max_tokens" '{
+        model: $model,
+        max_tokens: ($max_tokens | tonumber),
+        messages: [
+            {
+                role: "user", 
+                content: ($prompt + "\n\nInput content:\n" + $content)
+            }
+        ]
+    }' > "$request_file"
+    
+    # Clean up the temporary content file
+    rm "$piped_content"
+else
+    # Use jq to properly escape the prompt
+    jq -n --arg message "$1" --arg model "$model" --arg max_tokens "$max_tokens" '{
+        model: $model,
+        max_tokens: ($max_tokens | tonumber),
+        messages: [
+            {
+                role: "user",
+                content: $message
+            }
+        ]
+    }' > "$request_file"
+fi
+
+# Show the API request in verbose mode
+if [ "$verbose" = true ]; then
+    echo "API Request:"
+    cat "$request_file" | jq .
+    echo "Calling Claude API..."
+fi
+
+# Call Claude API using the JSON file
+response=$(curl -s https://api.anthropic.com/v1/messages \
+    -H "content-type: application/json" \
+    -H "x-api-key: $API_KEY" \
+    -H "anthropic-version: 2023-06-01" \
+    -d @"$request_file")
+
+# Clean up the request file
+rm "$request_file"
+
+# Check if there was an error in the API call
+if echo "$response" | jq -e '.error' >/dev/null 2>&1; then
+    echo "API Error:"
+    echo "$response" | jq -r '.error.message // .error'
+    exit 1
+fi
+
+# Extract the response content
+if echo "$response" | jq -e '.content' >/dev/null 2>&1; then
+    # Extract the text response
+    result=$(echo "$response" | jq -r '.content[] | select(.type=="text") | .text')
+    
+    # Output handling
+    if [ -n "$output_file" ]; then
+        # Create directory for output file if it doesn't exist
+        output_dir=$(dirname "$output_file")
+        if [ "$output_dir" != "." ] && [ ! -d "$output_dir" ]; then
+            mkdir -p "$output_dir"
+        fi
+        
+        # Save to file
+        echo "$result" > "$output_file"
+        echo "Response saved to: $output_file"
+    else
+        # Print to standard output
+        echo "$result"
+    fi
+else
+    # Error handling
+    echo "Couldn't parse the response in expected format."
+    echo "Response structure:"
+    echo "$response" | jq '.'
+    exit 1
+fi
+
+# Auto-create files if Claude generates code or content
+if echo "$result" | grep -q "^```" && [ -z "$output_file" ]; then
+    # Extract code blocks and their languages
+    echo "$result" | awk '
+    /^```[a-zA-Z0-9]*$/ {
+        in_block = 1
+        language = substr($0, 4)
+        content = ""
+        next
+    }
+    /^```$/ {
+        in_block = 0
+        if (language != "" && length(content) > 10) {
+            if (language == "bash" || language == "sh") { extension = ".sh" }
+            else if (language == "python" || language == "py") { extension = ".py" }
+            else if (language == "javascript" || language == "js") { extension = ".js" }
+            else if (language == "typescript" || language == "ts") { extension = ".ts" }
+            else if (language == "markdown" || language == "md") { extension = ".md" }
+            else if (language == "html") { extension = ".html" }
+            else if (language == "css") { extension = ".css" }
+            else if (language == "json") { extension = ".json" }
+            else if (language == "yaml" || language == "yml") { extension = ".yml" }
+            else if (language == "c" || language == "cpp") { extension = ".c" }
+            else if (language == "rust" || language == "rs") { extension = ".rs" }
+            else if (language == "go") { extension = ".go" }
+            else if (language == "java") { extension = ".java" }
+            else if (language == "php") { extension = ".php" }
+            else { extension = ".txt" }
+            
+            filename = "claude_output" extension
+            
+            # Check if file exists and create a unique name
+            i = 1
+            while (system("test -f " filename) == 0) {
+                i++
+                filename = "claude_output" i extension
+            }
+            
+            print "Created file: " filename
+            print content > filename
+            close(filename)
+            
+            # Make scripts executable
+            if (extension == ".sh" || extension == ".py") {
+                system("chmod +x " filename)
+            }
+        }
+        next
+    }
+    in_block == 1 {
+        content = content $0 "\n"
+    }
+    ' 2>/dev/null
+fi
