@@ -9,7 +9,8 @@ This repository contains several tools for using Claude AI in your daily workflo
 1. **claude-ask** - Command-line tool for asking Claude questions and getting responses
 2. **claude-bash** - Generate and execute bash commands using natural language
 3. **claude-fix** - Fix issues in scripts and files using Claude
-4. **claude-vim** - Vim plugin for seamless Claude integration in your editor
+4. **claude-agent** - A CLI agent that uses Claude AI to execute system tasks
+5. **claude-vim** - Vim plugin for seamless Claude integration in your editor
 
 All tools use the secure `tulikieli` credential manager to retrieve your Claude API key.
 
@@ -42,6 +43,7 @@ tulikieli add claude api_key "your_actual_api_key_here"
    chmod +x ~/bin/claude-ask
    chmod +x ~/bin/claude-bash
    chmod +x ~/bin/claude-fix
+   chmod +x ~/bin/claude-agent.sh
    ```
 3. Ensure ~/bin is in your PATH:
    ```bash
@@ -139,6 +141,43 @@ claude-fix script.py "The script fails when processing empty input"
 - Performs sanity checks before updating the file
 - Prompts for confirmation for significant changes
 
+### claude-agent
+
+A CLI agent that uses Claude AI to execute system tasks by determining and running the appropriate commands.
+
+#### Usage
+
+```bash
+# Basic usage
+claude-agent.sh "Collect all hardware information about my computer"
+
+# Save output to a file
+claude-agent.sh -o system_report.md "Generate a system report"
+
+# Set a custom output directory
+claude-agent.sh -d /path/to/output "Check disk usage and suggest cleanup"
+```
+
+#### Options
+
+- `-o FILE` - Save final output to the specified file
+- `-d DIRECTORY` - Output directory (default: ~/claude_agent)
+- `-m MODEL` - Specify Claude model (default: claude-3-7-sonnet-20250219)
+- `-i ITERATIONS` - Maximum iterations (default: 5)
+- `-t TIMEOUT` - Command timeout in seconds (default: 30)
+- `-v` - Verbose mode (show API requests and responses)
+- `-r` - Force root access (use sudo for all commands)
+- `-h` - Show help message
+
+#### Features
+
+- Intelligently breaks down complex tasks into step-by-step commands
+- Creates detailed logs of all commands and their outputs
+- Validates commands before execution for safety
+- Handles sudo commands with user confirmation
+- Timeouts for long-running commands
+- Organizes outputs in session-based directories
+
 ## Vim Integration (claude-vim.vim)
 
 Seamlessly use Claude AI directly within Vim.
@@ -191,9 +230,11 @@ After Claude responds in a new buffer, you can navigate between buffers:
 
 3. **For shell commands**: When using `claude-bash`, review the command before execution, especially for file operations.
 
-4. **Vim workflow**: Use split windows (`Ctrl+w s` or `Ctrl+w v`) to view Claude's response alongside your code.
+4. **For the agent**: When using `claude-agent.sh`, provide clear task descriptions and review any sudo commands before confirming execution.
 
-5. **Security**: Review all commands from `claude-bash` before execution.
+5. **Vim workflow**: Use split windows (`Ctrl+w s` or `Ctrl+w v`) to view Claude's response alongside your code.
+
+6. **Security**: Review all commands from `claude-bash` and `claude-agent.sh` before execution.
 
 ## Troubleshooting
 
